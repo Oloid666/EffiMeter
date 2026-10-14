@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>💎 DM40A Analyzer V17.0 - Raw Data & Robust Link</title>
+    <style>
+        :root { --vin: #3b82f6; --vo: #10b981; --iin: #f59e0b; --io: #ef4444; --bg: #0b1120; --card: #1e293b; --text: #f1f5f9; --eff: #d946ef; --warning: #ff4444; --mismatch: #facc15; }
+        body { font-family: 'Consolas', sans-serif; background: var(--bg); color: var(--text); padding: 15px; margin: 0; }
+        .header { display: flex; justify-content: space-between; align-items: center; background: #1e3a8a; padding: 15px; border-radius: 8px; margin-bottom: 10px; border: 1px solid #2d3a5a; }
+        .eff-panel { background: #0f172a; border: 3px solid var(--eff); padding: 15px; border-radius: 12px; text-align: center; margin-bottom: 10px; position: relative; }
+        .eff-val { font-size: 5.5rem; font-weight: 900; color: var(--eff); line-height: 1; }
+        .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+        .card { background: var(--card); border-radius: 10px; padding: 15px; text-align: center; border: 3px solid #334155; position: relative; }
+        .card.active-vin { border-color: var(--vin); }
+        .card.active-vo { border-color: var(--vo); }
+        .card.active-iin { border-color: var(--iin); }
+        .card.active-io { border-color: var(--io); }
+        .val-box { font-size: 3rem; color: #4ade80; font-weight: bold; }
+        .mini-card { background: #1e293b; padding: 12px; border-radius: 10px; border: 2px solid #475569; width: 380px; flex-shrink: 0; position: relative; font-size: 13px; }
+        .raw-hex { background: #000; color: #aaa; padding: 4px; border-radius: 4px; font-family: monospace; font-size: 11px; margin-top: 5px; border-left: 3px solid #666; }
+        .del-btn { position: absolute; top: 8px; right: 8px; background: #ef4444; color: white; border: none; border-radius: 4px; width: 22px; height: 22px; cursor: pointer; }
+        .log-area { width: 100%; height: 160px; background: #000; color: #10b981; border: none; padding: 10px; font-size: 13px; font-family: monospace; border-radius: 4px; margin-top: 5px; }
+        #toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #10b981; color: white; padding: 10px 25px; border-radius: 20px; display: none; z-index: 1000; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        #toast.err { background: var(--warning); }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <button class="btn" style="background:var(--vin); padding:10px 20px; color:white; border:none; border-radius:5px; cursor:pointer;" onclick="connect()">🔍 搜尋 DM40A</button>
+    <div class="status-box">連線進度: <span id="count" style="color:var(--iin)">0 / 4</span></div>
+    <div style="display:flex; gap:10px; align-items:center;">
+        <select id="poll-speed" style="background:#000; color:#fff; padding:5px; border-radius:4px;">
+            <option value="1500">穩定優先 (1.5s)</option>
+            <option value="800" selected>標準平衡 (0.8s)</option>
+            <option value="400">極速反應 (0.4s)</option>
+        </select>
+        <button onclick="smartAssign()" style="background:var(--iin); color:#000; border:none; padding:8px 15px; border-radius:5px; cursor:pointer; font-weight:bold;">⚡ 智慧重分配</button>
+    </div>
+</div>
+
+<div class="eff-panel">
+    <div id="stale-msg" style="position:absolute; top:10px; right:20px; color:red; display:none;">⚠️ 數據停滯</div>
+    <div class="eff-val" id="total-eff">0.00 %</div>
+    <div id="p-info" style="font-size: 1.4rem; color:#94a3b8; margin-top:5px;">Pout: 0.000W / Pin: 0.000W</div>
+</div>
+
+<div class="grid">
+    <div class="card" id="card-vin"><div>Vin (40V)</div><div class="val-box" id="disp-vin">0.0000</div></div>
+    <div class="card" id="card-vo"><div>Vout (4V)</div><div class="val-box" id="disp-vo">0.0000</div></div>
+    <div class="card" id="card-iin"><div>Iin (4A)</div><div class="val-box" id="disp-iin">0.00000</div></div>
+    <div class="card" id="card-io"><div>Iout (10A)</div><div class="val-box" id="disp-io">0.00000</div></div>
+</div>
+
+<div style="margin-top:20px;">
+    <div style="color:var(--vin); font-weight:bold; margin-bottom:10px;">🔬 設備管理池 (包含原始封包顯示)</div>
+    <div id="pool" style="display:flex; gap:12px; overflow-x:auto; padding-bottom:15px;"></div>
+</div>
+
+<div class="log-container" style="background:#161e31; padding:15px; border-radius:10px; border:1px solid #334155;">
+    <div style="font-weight:bold; color:var(--vo); margin-bottom:10px;">📊 最後紀錄快照: <span id="last-record-view" style="color:#fff; font-weight:normal;">等待存取...</span></div>
+    <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
+        <div>
+            ⏱ 延遲(s): <input type="number" id="delay-sec" value="1.0" step="0.5" style="width:50px; background:#000; color:#fff;">
+            <button onclick="delayedRecord()" style="background:var(--vo); color:white; border:none; padding:8px 15px; border-radius:5px;">⏺ 延遲紀錄</button>
+        </div>
+        <div>
+            <button onclick="copyLog()" style="background:var(--vin); color:white; border:none; padding:8px 15px; border-radius:5px;">🔗 複製 Excel</button>
+            <button onclick="clearLog()" style="background:var(--io); color:white; border:none; padding:8px 15px; border-radius:5px;">🗑 清除</button>
+        </div>
+    </div>
+    <textarea id="log" class="log-area" readonly>Vin	Vout	Iin	Iout	Efficiency&#10;</textarea>
+</div>
+
+<div id="toast"></div>
+
+<script>
+    const SERVICE_UUID = '0000fff0-0000-1000-8000-00805f9b34fb';
+    const WRITE_UUID = '0000fff1-0000-1000-8000-00805f9b34fb';
+    const READ_UUID = '0000fff2-0000-1000-8000-00805f9b34fb';
+    const CMD_POLL = new Uint8Array([0xaf, 0x05, 0x03, 0x09, 0x00, 0x40]);
+
+    let meterPool = [];
+    let pollIndex = 0;
+
+    function getHwFactor(hex) {
+        if ([0x30, 0x08, 0x21].includes(hex)) return 0.0001; 
+        if ([0x10, 0x29].includes(hex)) return 0.001; 
+        return 0.001; 
+    }
+
+    // 格式化封包為 Hex 字串
+    function bufToHex(buf) {
+        return Array.from(buf).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+    }
+
+    async function connect() {
+        try {
+            const device = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'DM40A' }], optionalServices: [SERVICE_UUID] });
+            const server = await device.gatt.connect();
+            
+            // 監聽斷線事件
+            device.addEventListener('gattserverdisconnected', () => {
+                const id = device.id.slice(-5);
+                showToast(`⚠️ 設備 ${id} 已斷開連線！`, true);
+                // 自動清理對應的 meter
+                const idx = meterPool.findIndex(m => m.id === id);
+                if(idx > -1) {
+                    meterPool.splice(idx, 1);
+                    renderPool();
+                }
+            });
+
+            const service = await server.getPrimaryService(SERVICE_UUID);
+            const charW = await service.getCharacteristic(WRITE_UUID);
+            const charR = await service.getCharacteristic(READ_UUID);
+
+            const m = { 
+                id: device.id.slice(-5), device, charW, role: 'none', manualFactor: null,
+                lastUpdate: Date.now(), data: { std: 0, hex: '--', rawPacket: '00 00 00 00 00 00', hwFactor: 0.001, isMismatch: false } 
+            };
+
+            await charR.startNotifications();
+            charR.addEventListener('characteristicvaluechanged', (e) => {
+                const raw = new Uint8Array(e.target.value.buffer);
+                const hexCode = raw[5];
+                const valRaw = raw[raw.length - 3] | (raw[raw.length - 2] << 8);
+                const hwFactor = getHwFactor(hexCode);
+                
+                m.data = {
+                    std: (valRaw === 65535 ? 0 : valRaw) * (m.manualFactor || hwFactor),
+                    hex: hexCode.toString(16).toUpperCase(),
+                    rawPacket: bufToHex(raw), // 記錄完整封包
+                    hwFactor: hwFactor,
+                    isMismatch: (m.manualFactor !== null && m.manualFactor !== hwFactor)
+                };
+                m.lastUpdate = Date.now();
+            });
+
+            meterPool.push(m);
+            if (meterPool.length === 1) startSequentialPoll();
+            renderPool();
+            showToast(`已成功連接 ${m.id}`);
+        } catch (e) { console.error(e); }
+    }
+
+    async function startSequentialPoll() {
+        while (true) {
+            if (meterPool.length > 0) {
+                const m = meterPool[pollIndex % meterPool.length];
+                if (m && m.device.gatt.connected) {
+                    try { await m.charW.writeValue(CMD_POLL); } catch(e){}
+                }
+                pollIndex++;
+            }
+            const delay = parseInt(document.getElementById('poll-speed').value);
+            await new Promise(r => setTimeout(r, delay / (meterPool.length || 1)));
+            updateUI();
+        }
+    }
+
+    function updateUI() {
+        const now = Date.now();
+        ['vin', 'vo', 'iin', 'io'].forEach(role => {
+            const m = meterPool.find(m => m.role === role);
+            const el = document.getElementById(`disp-${role}`);
+            const card = document.getElementById(`card-${role}`);
+            if (m) {
+                el.textContent = m.data.std.toFixed(role.includes('i') ? 5 : 4);
+                card.className = `card active-${role} ${m.data.isMismatch ? 'range-error' : ''}`;
+            }
+        });
+
+        // 效率計算與更新 (省略細節，同前版)
+        const vin = meterPool.find(m => m.role === 'vin')?.data.std || 0;
+        const vo = meterPool.find(m => m.role === 'vo')?.data.std || 0;
+        const iin = meterPool.find(m => m.role === 'iin')?.data.std || 0;
+        const io = meterPool.find(m => m.role === 'io')?.data.std || 0;
+        const pin = vin * iin;
+        const pout = vo * io;
+        const eff = pin > 0.001 ? (pout/pin*100) : 0;
+        document.getElementById('total-eff').textContent = (eff > 110 ? 0 : eff).toFixed(2) + " %";
+        document.getElementById('p-info').textContent = `Pout: ${pout.toFixed(3)}W / Pin: ${pin.toFixed(3)}W`;
+        
+        // 即時刷新小卡片中的數值與封包
+        meterPool.forEach(m => {
+            const vDisp = document.getElementById(`pool-val-${m.id}`);
+            const rDisp = document.getElementById(`raw-${m.id}`);
+            if(vDisp) vDisp.textContent = m.data.std.toFixed(m.role.includes('i') ? 5 : 4);
+            if(rDisp) rDisp.textContent = m.data.rawPacket; // 顯示完整封包
+        });
+        document.getElementById('count').textContent = `${meterPool.length} / 4`;
+    }
+
+    function renderPool() {
+        document.getElementById('pool').innerHTML = meterPool.map(m => `
+            <div class="mini-card">
+                <button class="del-btn" onclick="removeMeter('${m.id}')">X</button>
+                <div style="font-weight:bold; color:var(--iin)">DEV ID: ${m.id} ${m.manualFactor?'🔒鎖定':''}</div>
+                <div id="pool-val-${m.id}" style="color:#4ade80; font-size:2.2rem; font-weight:bold; font-family:monospace;">0.0000</div>
+                
+                <div style="font-size:10px; color:#94a3b8; margin-top:5px;">完整封包 (Hex):</div>
+                <div class="raw-hex" id="raw-${m.id}">${m.data.rawPacket}</div>
+
+                <select onchange="manualSet('${m.id}', this.value)" style="width:100%; margin-top:8px; padding:6px; background:#000; color:#fff; border:1px solid #444;">
+                    <option value="none">尚未分配角色</option>
+                    <option value="vin" ${m.role==='vin'?'selected':''}>Vin (40V)</option>
+                    <option value="vo" ${m.role==='vo'?'selected':''}>Vout (4V)</option>
+                    <option value="iin" ${m.role==='iin'?'selected':''}>Iin (4A)</option>
+                    <option value="io" ${m.role==='io'?'selected':''}>Iout (10A)</option>
+                </select>
+            </div>
+        `).join('');
+    }
+
+    // 徹底刪除與斷開邏輯
+    function removeMeter(id) {
+        const idx = meterPool.findIndex(m => m.id === id);
+        if (idx > -1) {
+            const m = meterPool[idx];
+            if (m.device.gatt.connected) {
+                m.device.gatt.disconnect();
+            }
+            meterPool.splice(idx, 1);
+            renderPool();
+            updateUI();
+            showToast(`已移除並斷開 ${id}`);
+        }
+    }
+
+    function showToast(msg, isErr = false) {
+        const t = document.getElementById('toast');
+        t.textContent = msg;
+        t.className = isErr ? 'err' : '';
+        t.style.display = "block";
+        setTimeout(() => t.style.display = "none", 3000);
+    }
+
+    // 其他紀錄功能保持不變...
+    function manualSet(id, role) {
+        const m = meterPool.find(m => m.id === id);
+        if(m) {
+            meterPool.forEach(o => { if(o.role === role) o.role = 'none'; });
+            m.role = role;
+            if (['vin', 'io'].includes(role)) m.manualFactor = 0.001; 
+            if (['vo', 'iin'].includes(role)) m.manualFactor = 0.0001;
+            renderPool();
+        }
+    }
+    function smartAssign() {
+        let sorted = [...meterPool].sort((a,b) => b.data.std - a.data.std);
+        if(sorted[0]) manualSet(sorted[0].id, 'vin');
+        if(sorted[1]) manualSet(sorted[1].id, 'io');
+        if(sorted[2]) manualSet(sorted[2].id, 'vo');
+        if(sorted[3]) manualSet(sorted[3].id, 'iin');
+    }
+    function doRecord() {
+        const vin = meterPool.find(m => m.role === 'vin')?.data.std || 0;
+        const vo = meterPool.find(m => m.role === 'vo')?.data.std || 0;
+        const iin = meterPool.find(m => m.role === 'iin')?.data.std || 0;
+        const io = meterPool.find(m => m.role === 'io')?.data.std || 0;
+        const eff = document.getElementById('total-eff').textContent;
+        const row = [vin.toFixed(4), vo.toFixed(4), iin.toFixed(5), io.toFixed(5), eff.replace(" %","")];
+        document.getElementById('log').value += row.join("\t") + "\n";
+        document.getElementById('last-record-view').textContent = row.join(" | ");
+        showToast("已存入紀錄");
+    }
+    async function delayedRecord() {
+        setTimeout(doRecord, parseFloat(document.getElementById('delay-sec').value)*1000);
+    }
+    function copyLog() { document.getElementById('log').select(); document.execCommand('copy'); showToast("已複製到剪貼簿"); }
+    function clearLog() { document.getElementById('log').value = "Vin\tVout\tIin\tIout\tEfficiency\n"; }
+</script>
+</body>
+</html>
